@@ -191,7 +191,8 @@ public:
                         py::array_t<float, py::array::c_style | py::array::forcecast> z,
                         py::array_t<int, py::array::c_style | py::array::forcecast> x_ix,
                         py::array_t<int, py::array::c_style | py::array::forcecast> y_ix,
-                        py::array_t<float, py::array::c_style | py::array::forcecast> phot) -> py::array_t<float> {
+                        py::array_t<float, py::array::c_style | py::array::forcecast> phot,
+                        const bool normalize) -> py::array_t<float> {
 
         frame_size_x = fx;
         frame_size_y = fy;
@@ -200,7 +201,7 @@ public:
 
         spc::forward_frames(psf, h_frames.mutable_data(), frame_size_x, frame_size_y, n_frames, n_emitters, roi_size_x,
                             roi_size_y,
-                            frame_ix.data(), xr.data(), yr.data(), z.data(), x_ix.data(), y_ix.data(), phot.data());
+                            frame_ix.data(), xr.data(), yr.data(), z.data(), x_ix.data(), y_ix.data(), phot.data(), normalize);
 
         return h_frames;
     }

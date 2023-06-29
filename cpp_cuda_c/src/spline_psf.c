@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <fenv.h>
+#include <stdbool.h>
+
 
 #include "spline_psf.h"
 
@@ -148,6 +150,7 @@ kernel_DerivativeSpline(spline *sp, const int xc, const int yc, int zc, const fl
 float fAt3Dj(spline *sp, const int xc, const int yc, int zc, const float phot, const float *delta_f) {
 
     // If the lateral position is outside the calibration, return epsilon value
+    // This may do something funky sometimes, but there seems to be no particular pattern to it 
     if ((xc < 0) || (xc > sp->xsize - 1) || (yc < 0) || (yc > sp->ysize - 1)) {
         return sp->roi_out_eps;
     }
@@ -161,7 +164,7 @@ float fAt3Dj(spline *sp, const int xc, const int yc, int zc, const float phot, c
         fv += delta_f[i] *
               sp->coeff[i * (sp->xsize * sp->ysize * sp->zsize) + zc * (sp->xsize * sp->ysize) + yc * sp->xsize + xc];
     }
-
+    // Everything is multiplied here by phot
     fv *= phot;
     return fv;
 }
@@ -171,13 +174,13 @@ float fSpline3D(spline *sp, float xc, float yc, float zc) {
     int x0, y0, z0;
     float x_delta, y_delta, z_delta;
 
-    x0 = (int) floor(xc);
+    x0 = (int) floorf(xc);
     x_delta = xc - x0;
 
-    y0 = (int) floor(yc);
+    y0 = (int) floorf(yc);
     y_delta = yc - y0;
 
-    z0 = (int) floor(zc);
+    z0 = (int) floorf(zc);
     z_delta = zc - z0;
 
     float delta_f[64] = { 0 };
@@ -196,13 +199,13 @@ void kernel_roi(spline *sp, float *rois, const int roi_ix, const int npx, const 
                 const float zc, const float phot) {
 
     /* Compute delta. Will be the same for all following px */
-    int x0 = (int) floor(xc);
+    int x0 = (int) floorf(xc);
     float x_delta = xc - x0;
 
-    int y0 = (int) floor(yc);
+    int y0 = (int) floorf(yc);
     float y_delta = yc - y0;
 
-    int z0 = (int) floor(zc);
+    int z0 = (int) floorf(zc);
     float z_delta = zc - z0;
 
     float delta_f[64] = { 0 };
@@ -210,13 +213,29 @@ void kernel_roi(spline *sp, float *rois, const int roi_ix, const int npx, const 
     float dyf[64] = { 0 };
     float dzf[64] = { 0 };
 
-    kernel_computeDelta3D(sp, x_delta, y_delta, z_delta, delta_f, dxf, dyf, dzf);
+    float tot_phot_count = 0;
+    float vali = 0;
 
+    kernel_computeDelta3D(sp, x_delta, y_delta, z_delta, delta_f, dxf, dyf, dzf);
+   
     /* loop through all pixels */
     for (int i = 0; i < npx; i++) {
         for (int j = 0; j < npx; j++) {
-            rois[roi_ix * npx * npy + i * npy + j] += fAt3Dj(sp, x0 + i, y0 + j, z0, phot, delta_f);
+            vali = fAt3Dj(sp, x0 + i, y0 + j, z0, phot, delta_f);
+            rois[roi_ix * npx * npy + i * npy + j] += vali;
+            tot_phot_count += vali;
         }
+    }
+
+    if(normalize) {
+        float mult_factor = phot/tot_phot_count;
+
+        for (int i = 0; i < npx; i++) {
+            for (int j = 0; j < npx; j++) {
+                rois[roi_ix * npx * npy + i * npy + j] *= mult_factor;
+            }
+        }
+
     }
 }
 
@@ -279,6 +298,7 @@ void forward_rois(spline *sp, float *rois, const int n_rois, const int npx, cons
     }
 
     for (int i = 0; i < n_rois; i++) {
+        // Each of these should sum to phot[i] if correctly normalized
         kernel_roi(sp, rois, i, npx, npy, xc[i], yc[i], zc[i], phot[i]);
     }
 
@@ -333,7 +353,7 @@ void roi_accumulator(float *frames, const int frame_size_x, const int frame_size
 void forward_frames(spline *sp, float *frames, const int frame_size_x, const int frame_size_y, const int n_frames,
                     const int n_rois, const int roi_size_x, const int roi_size_y,
                     const int *frame_ix, const float *xr0, const float *yr0, const float *z0, const int *x_ix,
-                    const int *y_ix, const float *phot) {
+                    const int *y_ix, const float *phot, const bool *normalize) {
     
     printf("ON CPU /n");
 
@@ -345,7 +365,7 @@ void forward_frames(spline *sp, float *frames, const int frame_size_x, const int
     for (int i = 0; i < frame_size_x * frame_size_y * n_frames; i++) {
         frames[i] = 0.0;
     }
-
+    // Each roi should sum to phot???
     // forward rois and accumulate
     forward_rois(sp, rois, n_rois, roi_size_x, roi_size_y, xr0, yr0, z0, phot);
     roi_accumulator(frames, frame_size_x, frame_size_y, n_frames, rois, n_rois, frame_ix, x_ix, y_ix, roi_size_x,
