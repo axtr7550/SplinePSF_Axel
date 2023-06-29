@@ -361,6 +361,8 @@ namespace spline_psf_gpu {
 
 auto forward_rois(spline *d_sp, float *d_rois, const int n, const int roi_size_x, const int roi_size_y,
     const float *d_x, const float *d_y, const float *d_z, const float *d_phot) -> void {
+    
+    printf("IN CUDA! /n");
 
     // init cuda_err
     cudaError_t err = cudaSuccess;

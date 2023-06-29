@@ -334,6 +334,8 @@ void forward_frames(spline *sp, float *frames, const int frame_size_x, const int
                     const int n_rois, const int roi_size_x, const int roi_size_y,
                     const int *frame_ix, const float *xr0, const float *yr0, const float *z0, const int *x_ix,
                     const int *y_ix, const float *phot) {
+    
+    printf("ON CPU /n");
 
     // malloc rois
     int roi_px = n_rois * roi_size_x * roi_size_y;
