@@ -148,7 +148,8 @@ public:
     auto forward_rois(py::array_t<float, py::array::c_style | py::array::forcecast> x,
                       py::array_t<float, py::array::c_style | py::array::forcecast> y,
                       py::array_t<float, py::array::c_style | py::array::forcecast> z,
-                      py::array_t<float, py::array::c_style | py::array::forcecast> phot) -> py::array_t<float> {
+                      py::array_t<float, py::array::c_style | py::array::forcecast> phot,
+                      const bool normalize) -> py::array_t<float> {
 
         const uint64_t n = x.size();
         py::array_t<float> h_rois(n * roi_size_x * roi_size_y);
@@ -158,7 +159,7 @@ public:
         }
 
         spc::forward_rois(psf, h_rois.mutable_data(), n, roi_size_x, roi_size_y, x.data(), y.data(), z.data(),
-                          phot.data());
+                          phot.data(), normalize);
 
         return h_rois;
     }

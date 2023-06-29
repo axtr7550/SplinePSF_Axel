@@ -28,7 +28,7 @@ float fAt3Dj(spline *, int xc, int yc, int zc, float phot, const float *delta_f)
 
 float fSpline3D(spline *sp, float xc, float yc, float zc);
 
-void kernel_roi(spline *sp, float *rois, int roi_ix, int npx, int npy, float xc, float yc, float zc, float phot);
+void kernel_roi(spline *sp, float *rois, int roi_ix, int npx, int npy, float xc, float yc, float zc, float phot, bool normalize);
 
 void kernel_drv_roi(spline *sp, float *rois, float *drv_rois, int roi_ix, int npx, int npy,
                     float xc, float yc, float zc, float phot, float bg, bool add_bg);
@@ -196,7 +196,7 @@ float fSpline3D(spline *sp, float xc, float yc, float zc) {
 
 
 void kernel_roi(spline *sp, float *rois, const int roi_ix, const int npx, const int npy, const float xc, const float yc,
-                const float zc, const float phot) {
+                const float zc, const float phot, const bool normalize) {
 
     /* Compute delta. Will be the same for all following px */
     int x0 = (int) floorf(xc);
@@ -290,7 +290,8 @@ void kernel_drv_roi(spline *sp, float *rois, float *drv_rois, const int roi_ix, 
 }
 
 void forward_rois(spline *sp, float *rois, const int n_rois, const int npx, const int npy,
-                  const float *xc, const float *yc, const float *zc, const float *phot) {
+                  const float *xc, const float *yc, const float *zc, const float *phot,
+                   const bool normalize) {
 
     // init rois
     for (int i = 0; i < n_rois * npx * npy; i++) {
@@ -299,7 +300,7 @@ void forward_rois(spline *sp, float *rois, const int n_rois, const int npx, cons
 
     for (int i = 0; i < n_rois; i++) {
         // Each of these should sum to phot[i] if correctly normalized
-        kernel_roi(sp, rois, i, npx, npy, xc[i], yc[i], zc[i], phot[i]);
+        kernel_roi(sp, rois, i, npx, npy, xc[i], yc[i], zc[i], phot[i], normalize);
     }
 
 }
@@ -353,7 +354,7 @@ void roi_accumulator(float *frames, const int frame_size_x, const int frame_size
 void forward_frames(spline *sp, float *frames, const int frame_size_x, const int frame_size_y, const int n_frames,
                     const int n_rois, const int roi_size_x, const int roi_size_y,
                     const int *frame_ix, const float *xr0, const float *yr0, const float *z0, const int *x_ix,
-                    const int *y_ix, const float *phot, const bool *normalize) {
+                    const int *y_ix, const float *phot, const bool normalize) {
     
     printf("ON CPU /n");
 
@@ -367,7 +368,7 @@ void forward_frames(spline *sp, float *frames, const int frame_size_x, const int
     }
     // Each roi should sum to phot???
     // forward rois and accumulate
-    forward_rois(sp, rois, n_rois, roi_size_x, roi_size_y, xr0, yr0, z0, phot);
+    forward_rois(sp, rois, n_rois, roi_size_x, roi_size_y, xr0, yr0, z0, phot, normalize);
     roi_accumulator(frames, frame_size_x, frame_size_y, n_frames, rois, n_rois, frame_ix, x_ix, y_ix, roi_size_x,
                     roi_size_y);
 
