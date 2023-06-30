@@ -31,7 +31,7 @@ float fSpline3D(spline *sp, float xc, float yc, float zc);
 void kernel_roi(spline *sp, float *rois, int roi_ix, int npx, int npy, float xc, float yc, float zc, float phot, bool normalize);
 
 void kernel_drv_roi(spline *sp, float *rois, float *drv_rois, int roi_ix, int npx, int npy,
-                    float xc, float yc, float zc, float phot, float bg, bool add_bg);
+                    float xc, float yc, float zc, float phot, float bg, bool add_bg, bool normalize);
 
 void roi_accumulator(float *frames, int frame_size_x, int frame_size_y, int n_frames, const float *rois,
                      int n_rois, const int *frame_ix, const int *x0, const int *y0, int roi_size_x, int roi_size_y);
@@ -140,6 +140,8 @@ kernel_DerivativeSpline(spline *sp, const int xc, const int yc, int zc, const fl
     dudt[4] *= theta[2];
     dudt[2] = temp;
     dudt[3] = 1;
+
+    // dudt[2] is right now set to the pixel value (not photon value)
     if (add_bg) {
         *model = theta[3] + theta[2] * temp;  // saves time
     } else {
@@ -226,7 +228,7 @@ void kernel_roi(spline *sp, float *rois, const int roi_ix, const int npx, const 
             tot_phot_count += vali;
         }
     }
-
+    // Normalizes to make sure that the total photon count is phot
     if(normalize) {
         float mult_factor = phot/tot_phot_count;
 
@@ -240,7 +242,10 @@ void kernel_roi(spline *sp, float *rois, const int roi_ix, const int npx, const 
 }
 
 void kernel_drv_roi(spline *sp, float *rois, float *drv_rois, const int roi_ix, const int npx, const int npy,
-                    const float xc, const float yc, const float zc, const float phot, const float bg, const bool add_bg) {
+                    const float xc, const float yc, const float zc, const float phot, const float bg, const bool add_bg,
+                    const bool normalize) {
+                    
+    /* Compute delta. Will be the same for all following px */
 
     int x0, y0, z0; // px indices
     float model;  // model value
@@ -268,25 +273,73 @@ void kernel_drv_roi(spline *sp, float *rois, float *drv_rois, const int roi_ix, 
     float dyf[64] = { 0 };
     float dzf[64] = { 0 };
 
+    float deriv_sums[5] = { 0 };
+
     kernel_computeDelta3D(sp, x_delta, y_delta, z_delta, delta_f, dxf, dyf, dzf);
+    
+    
 
     /* loop through all pixels */
     for (int i = 0; i < npx; i++) {
         for (int j = 0; j < npy; j++) {
             float deriv_px[5] = {0};
             kernel_DerivativeSpline(sp, x0 + i, y0 + j, z0, theta, deriv_px, &model, delta_f, dxf, dyf, dzf, add_bg);
-
+            
+            // Could sum deriv_px[2] to calculate photon factor. Should multiply the other derivs and then subtract an extra term
             // set model image (almost for free when calc. gradient)
+            // This is not normalized right now 
             rois[roi_ix * npx * npy + i * npy + j] += model; // unlike in kernel_roi, background and photons is already in theta.
 
             // store gradient
             for (int k = 0; k < sp->n_par; k++) {
+                // Can sum gradient right here probably
+                deriv_sums[k] += deriv_px[k];
                 drv_rois[roi_ix * sp->n_par * npx * npy + k * npx * npy + i * npy + j] = deriv_px[k];
             }
 
         }
     }
 
+    float dphot;
+
+    if (normalize) {
+        float mult_factor = 1/deriv_sums[2];
+        float mult_factor_sq = mult_factor * mult_factor;
+
+        printf("The factor is: %f. Z: %f. sq: %f \n", mult_factor, zc, mult_factor_sq);
+        printf("Deriv sums: x: %f, y: %f , z: %f \n", deriv_sums[0], deriv_sums[1], deriv_sums[4]);
+
+        for (int i = 0; i < npx; i++) {
+            for (int j = 0; j < npy; j++) {
+
+                rois[roi_ix * npx * npy + i * npy + j] *= mult_factor; // I think this is correct.
+
+
+                for (int k = 0; k < sp->n_par; k++) {
+                    // I don't know C but there are two terms and I think this is ok
+                    // Need to make sure the phot is correct
+
+                    if (k != 3){
+                        
+                        // drv_rois contais df/dx * phot (where 0<=f<=1)
+
+                        drv_rois[roi_ix * sp->n_par * npx * npy + k * npx * npy + i * npy + j] *= mult_factor;
+
+                        if (k != 2){
+                            // Deriv_sums contains phot
+                            // need to multiply by f, i.e. df/dphot (index = 2)
+                            dphot =  drv_rois[roi_ix * sp->n_par * npx * npy + 2 * npx * npy + i * npy + j];
+                            drv_rois[roi_ix * sp->n_par * npx * npy + k * npx * npy + i * npy + j] -= dphot * mult_factor_sq * deriv_sums[k];
+
+                        }
+                        
+                    }
+                }
+        }
+    }
+
+    }
+   
 }
 
 void forward_rois(spline *sp, float *rois, const int n_rois, const int npx, const int npy,
@@ -306,7 +359,8 @@ void forward_rois(spline *sp, float *rois, const int n_rois, const int npx, cons
 }
 
 void forward_drv_rois(spline *sp, float *rois, float *drv_rois, const int n_rois, const int npx, const int npy,
-                      const float *xc, const float *yc, const float *zc, const float *phot, const float *bg, const bool add_bg) {
+                      const float *xc, const float *yc, const float *zc, const float *phot, const float *bg, 
+                      const bool add_bg, const bool normalize) {
 
     // init rois and pixelwise derivatives
     for (int i = 0; i < n_rois * npx * npy; i++) {
@@ -318,7 +372,7 @@ void forward_drv_rois(spline *sp, float *rois, float *drv_rois, const int n_rois
     }
 
     for (int i = 0; i < n_rois; i++) {
-        kernel_drv_roi(sp, rois, drv_rois, i, npx, npy, xc[i], yc[i], zc[i], phot[i], bg[i], add_bg);
+        kernel_drv_roi(sp, rois, drv_rois, i, npx, npy, xc[i], yc[i], zc[i], phot[i], bg[i], add_bg, normalize);
     }
 }
 
@@ -356,7 +410,7 @@ void forward_frames(spline *sp, float *frames, const int frame_size_x, const int
                     const int *frame_ix, const float *xr0, const float *yr0, const float *z0, const int *x_ix,
                     const int *y_ix, const float *phot, const bool normalize) {
     
-    printf("ON CPU /n");
+    // printf("ON CPU /n");
 
     // malloc rois
     int roi_px = n_rois * roi_size_x * roi_size_y;

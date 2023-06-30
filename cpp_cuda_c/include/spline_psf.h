@@ -44,16 +44,17 @@ spline *initSpline(const float *coeff, int xsize, int ysize, int zsize);
 void destructor(spline *sp);
 
 void forward_rois(spline *sp, float *rois, int n_rois, int npx, int npy,
-                  const float *xc, const float *yc, const float *zc, const float *phot);
+                  const float *xc, const float *yc, const float *zc, 
+                  const float *phot, const bool normalize);
 
 void forward_drv_rois(spline *sp, float *rois, float *drv_rois, int n_rois, int npx, int npy,
                       const float *xc, const float *yc, const float *zc, const float *phot, const float *bg,
-                      const bool add_bg);
+                      const bool add_bg, const bool normalize);
 
 void forward_frames(spline *sp, float *frames, int frame_size_x, int frame_size_y, int n_frames,
                     int n_rois, int roi_size_x, int roi_size_y,
                     const int *frame_ix, const float *xr0, const float *yr0, const float *z0, const int *x_ix,
-                    const int *y_ix, const float *phot);
+                    const int *y_ix, const float *phot, const bool normalize);
 
 
 #endif /* spline_psf_h */

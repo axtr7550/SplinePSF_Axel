@@ -100,7 +100,8 @@ class PSFWrapperCUDA : public PSFWrapperBase<spg::spline> {
                         py::array_t<float, py::array::c_style | py::array::forcecast> z,
                         py::array_t<int, py::array::c_style | py::array::forcecast> x_ix,
                         py::array_t<int, py::array::c_style | py::array::forcecast> y_ix,
-                        py::array_t<float, py::array::c_style | py::array::forcecast> phot) -> py::array_t<float> {
+                        py::array_t<float, py::array::c_style | py::array::forcecast> phot,
+                        const bool normalize) -> py::array_t<float> {
 
             frame_size_x = fx;
             frame_size_y = fy;
@@ -169,7 +170,7 @@ public:
                           py::array_t<float, py::array::c_style | py::array::forcecast> z,
                           py::array_t<float, py::array::c_style | py::array::forcecast> phot,
                           py::array_t<float, py::array::c_style | py::array::forcecast> bg,
-                          const bool add_bg) -> std::tuple<py::array_t<float>, py::array_t<float>> {
+                          const bool add_bg, const bool normalize) -> std::tuple<py::array_t<float>, py::array_t<float>> {
 
 
         const int n_par = 5;
@@ -179,7 +180,7 @@ public:
         py::array_t<float> h_drv_rois(n_par * n * roi_size_x * roi_size_y);
 
         spc::forward_drv_rois(psf, h_rois.mutable_data(), h_drv_rois.mutable_data(), n, roi_size_x, roi_size_y,
-                              x.data(), y.data(), z.data(), phot.data(), bg.data(), add_bg);
+                              x.data(), y.data(), z.data(), phot.data(), bg.data(), add_bg, normalize);
 
         return std::make_tuple(h_drv_rois, h_rois);
     }
