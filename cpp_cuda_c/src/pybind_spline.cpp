@@ -61,13 +61,14 @@ class PSFWrapperCUDA : public PSFWrapperBase<spg::spline> {
         auto forward_rois(py::array_t<float, py::array::c_style | py::array::forcecast> x,
                         py::array_t<float, py::array::c_style | py::array::forcecast> y,
                         py::array_t<float, py::array::c_style | py::array::forcecast> z,
-                        py::array_t<float, py::array::c_style | py::array::forcecast> phot) -> py::array_t<float> {
+                        py::array_t<float, py::array::c_style | py::array::forcecast> phot,
+                        const bool normalize) -> py::array_t<float> {
 
 
             const uint64_t n = x.size();  // number of ROIs
             py::array_t<float> h_rois(n * roi_size_x * roi_size_y);
 
-            spg::forward_rois_host2host(psf, h_rois.mutable_data(), n, roi_size_x, roi_size_y, x.data(), y.data(), z.data(), phot.data());
+            spg::forward_rois_host2host(psf, h_rois.mutable_data(), n, roi_size_x, roi_size_y, x.data(), y.data(), z.data(), phot.data(), normalize);
 
             return h_rois;
         }
@@ -109,7 +110,7 @@ class PSFWrapperCUDA : public PSFWrapperBase<spg::spline> {
             py::array_t<float> h_frames(n_frames * frame_size_x * frame_size_y);
 
             spg::forward_frames_host2host(psf, h_frames.mutable_data(), frame_size_x, frame_size_y, n_frames, n_emitters, roi_size_x, roi_size_y,
-                frame_ix.data(), xr.data(), yr.data(), z.data(), x_ix.data(), y_ix.data(), phot.data());
+                frame_ix.data(), xr.data(), yr.data(), z.data(), x_ix.data(), y_ix.data(), phot.data(), normalize);
 
             return h_frames;
         }

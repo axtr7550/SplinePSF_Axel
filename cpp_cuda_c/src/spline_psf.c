@@ -287,7 +287,6 @@ void kernel_drv_roi(spline *sp, float *rois, float *drv_rois, const int roi_ix, 
             
             // Could sum deriv_px[2] to calculate photon factor. Should multiply the other derivs and then subtract an extra term
             // set model image (almost for free when calc. gradient)
-            // This is not normalized right now 
             rois[roi_ix * npx * npy + i * npy + j] += model; // unlike in kernel_roi, background and photons is already in theta.
 
             // store gradient
@@ -305,14 +304,14 @@ void kernel_drv_roi(spline *sp, float *rois, float *drv_rois, const int roi_ix, 
     if (normalize) {
         float mult_factor = 1/deriv_sums[2];
         float mult_factor_sq = mult_factor * mult_factor;
-
+/* 
         printf("The factor is: %f. Z: %f. sq: %f \n", mult_factor, zc, mult_factor_sq);
         printf("Deriv sums: x: %f, y: %f , z: %f \n", deriv_sums[0], deriv_sums[1], deriv_sums[4]);
-
+ */
         for (int i = 0; i < npx; i++) {
             for (int j = 0; j < npy; j++) {
 
-                rois[roi_ix * npx * npy + i * npy + j] *= mult_factor; // I think this is correct.
+                rois[roi_ix * npx * npy + i * npy + j] *= mult_factor; // Normalizes  
 
 
                 for (int k = 0; k < sp->n_par; k++) {
