@@ -36,36 +36,17 @@ unsigned int stride, unsigned int start, unsigned int n);
 */
 template <int blockSize>
 
-__global__ 
-void reduce_sum_matrix(float *g_idata, float *g_odata, int n, 
- int r, int npy, int npx, float* temp);
-
-template <int blockSize>
 __device__ 
 void warpReduce(volatile float* sdata, int tid) ;
 
-template <int blockSize>
-__device__ 
-void warpReduce_2(volatile float* sdata, int tid) ;
+__global__ 
+void reduce_small(float *rois, float *g_odata, int r, const int np, int n_blocks, const int startPos);
 
 __global__ 
-void reduce0(float *g_idata, float *g_odata, int r, int npx, int npy, int n_blocks);
-
-template <int blockSize>
-__global__ 
-void reduce(float *g_idata, float *g_odata, int n);
-
-__global__ 
-void reduce_small(float *rois, float *g_odata, int r, int npx, int npy, int n_blocks);
-
-__global__ 
-void normalize(float *rois, float factor, int r, int npx, int npy);
+void normalize(float *rois, float factor, int r, const int n_pixels);
 
 __global__ 
 void  get_factor(const float* phot_, float *total_sum, float *factors);
-
-__global__ 
-void dummy();
 
 __device__
 auto kernel_computeDelta3D(spline *sp,
@@ -86,8 +67,7 @@ auto kernel_roi(spline *sp, float *rois, const int npx, const int npy,
     const float* xc_, const float* yc_, const float* zc_, const float* phot_) -> void;
 
 __global__
-void kernel_sum_up(spline *sp, float *rois, float *sum_array, const int npx, const int npy,
-    const float* phot_);
+void kernel_sum_up(spline *sp, float *rois, float *sum_array, const int npx, const int npy);
 
 __global__ 
 void kernel_normalize(float *rois, float *factors, int npx, int npy);
@@ -388,8 +368,10 @@ namespace spline_psf_gpu {
         // accumulate rois into frames
         const int blocks = (n_rois * roi_size_x * roi_size_y) / 256 + 1;
         const int thread_p_block = 256;
+        // One thread per roi pixel
+        // Still quite quick
         roi_accumulate<<<blocks, thread_p_block>>>(d_frames, frame_size_x, frame_size_y, n_frames,
-            d_rois, n_rois, d_fix, d_xix, d_yix, roi_size_x, roi_size_y);
+        d_rois, n_rois, d_fix, d_xix, d_yix, roi_size_x, roi_size_y);
 
         cudaDeviceSynchronize();
 
@@ -418,13 +400,15 @@ auto forward_rois(spline *d_sp, float *d_rois, const int n, const int roi_size_x
     // init cuda_err
     cudaError_t err = cudaSuccess;
 
+
     // start n blocks which itself start threads corresponding to the number of px childs (dynamic parallelism)
     kernel_roi<<<n, 1>>>(d_sp, d_rois, roi_size_x, roi_size_y, d_x, d_y, d_z, d_phot);
     cudaDeviceSynchronize();
 
+
+    
     if (normalize){
 
-    // A bit of cheating, will work when n-elements is below 2048
     float *sum_array;
 
     //int stride = ((roi_size_x*roi_size_y)/1024);
@@ -432,8 +416,14 @@ auto forward_rois(spline *d_sp, float *d_rois, const int n, const int roi_size_x
     cudaMalloc(&sum_array, n*sizeof(float));
     cudaMemset(sum_array, 0.0, n*sizeof(float));
 
-    kernel_sum_up<<<n, 1>>>(d_sp, d_rois, sum_array, roi_size_x, roi_size_y, d_phot);
+
+
+    kernel_sum_up<<<n, 1>>>(d_sp, d_rois, sum_array, roi_size_x, roi_size_y);
     cudaDeviceSynchronize();
+
+
+    // A bit of cheating, will work when n-elements is below 2048
+
     float *factors_array;
 
     cudaMalloc(&factors_array, n*sizeof(float));
@@ -445,6 +435,7 @@ auto forward_rois(spline *d_sp, float *d_rois, const int n, const int roi_size_x
     kernel_normalize<<<n, 1>>>(d_rois, factors_array, roi_size_x, roi_size_y);
     
     cudaFree(sum_array);
+
     cudaFree(factors_array);
     }
     // Sum array should contain sum from each block. Sum each roi and get factor. Then in parallel multiply each pixel by factor.
@@ -545,8 +536,9 @@ auto fAt3Dj(spline *sp, float* rois, const int roi_ix, const int npx, const int 
 
     // term common to all pixels, must be executed at least once per kernel block (since sync only syncs within block)
     // if (i == 0 and j == 0) {  // linear / C++ equivalent
+    
     if (threadIdx.x == 0) {
-
+        
         // 64 -- number of "a" parameters I guess this is a way of initializing the array
         for (int k = 0; k < 64; k++) {
             delta_f[k] = 0.0;
@@ -554,15 +546,14 @@ auto fAt3Dj(spline *sp, float* rois, const int roi_ix, const int npx, const int 
             dyf[k] = 0.0;
             dzf[k] = 0.0;
         }
-
-        // May be possible to use first 64 threads for this
+        
 
         // This is different to the C library since we needed to rearrange a bit to account for the GPU parallelism
+        // Could possibly be done in parallel but does not seem faster
         kernel_computeDelta3D(sp, delta_f, dxf, dyf, dzf, x_delta, y_delta, z_delta);
     }
 
     __syncthreads();  // wait so that all threads see the deltas. REMINDER: only works for within block 
-    // WHAT happens with threads that are not in the same block??? (40x40 > 1024)
 
     // kill excess threads (I think it needs to happen after syncthreads)
     if ((i >= npx) || (j >= npy)) {
@@ -584,50 +575,24 @@ auto fAt3Dj(spline *sp, float* rois, const int roi_ix, const int npx, const int 
     zc = max(zc,0);
     zc = min(zc,sp->zsize-1);
 
-    /*
-    float *fv;
-    cudaMalloc(&fv, sizeof(float));
-    */
-
     float fv = 0.0;
-
+    // Loop but variables in shared memory means still fast
     for (int k = 0; k < 64; k++) {
         fv += delta_f[k] * sp->coeff[k * (sp->xsize * sp->ysize * sp->zsize) + zc * (sp->xsize * sp->ysize) + yc * sp->xsize + xc];
     }
-        // Multiplying by coefficients
-        // Could this be done in parallel???
-        // Maybe with clever allocation
-        // probably same idea as summing over all pixels in the end
-    // float stride = sp->xsize * sp->ysize * sp->zsize;
-    // float start = zc * (sp->xsize * sp->ysize) + yc * sp->xsize + xc;
-
-    // printf("Variable address: %p, value: %f\n", fv, fv);
-    // delta_f is in shared memory, which makes this inefficient, would need to move to global
-    // printf("Delta[0]: %f", delta_f[0]);
-    /*
-    float *delta_temp;
-    cudaMalloc(&delta_temp, sizeof(float)*64);
-    for (int k = 0; k < 64; k++) {
-        delta_temp[k] = delta_f[k];
-    }
-    */
-    //reduce_dot_product_matrix<64><<< 1, 64 >>>(delta_temp, sp->coeff, fv ,stride, start, 64); 
-
-    //}
-    //__syncthreads();
 
     // This looks like the C code
     // write to global roi stack
     rois[roi_ix * npx * npy + i * npy + j] = phot * fv;
-
-    // Add phot*fv to some global variable in parallel, then collect and normalize
-    // Could use atomic add, but would likely be inefficient 
+    
+    // atomicAdd(&sum_array[roi_ix], phot * fv);
     return;
 }
 
 // kernel to compute psf for a single emitter
 __global__
-auto kernel_roi(spline *sp, float *rois, const int npx, const int npy, const float* xc_, const float* yc_, const float* zc_, const float* phot_) -> void {
+auto kernel_roi(spline *sp, float *rois, const int npx, const int npy, const float* xc_, 
+const float* yc_, const float* zc_, const float* phot_) -> void {
 
     int r = blockIdx.x;  // roi number 'r'
 
@@ -821,218 +786,46 @@ auto roi_accumulate(float *frames, const int frame_size_x, const int frame_size_
     }
 
 __global__
-void kernel_sum_up(spline *sp, float *rois, float* sum_array,const int npx, const int npy,
-     const float* phot_){
+void kernel_sum_up(spline *sp, float *rois, float* sum_array,const int npx, const int npy){
     
     int r = blockIdx.x; 
-    float phot = phot_[r];
 
-    int n_threads = min(1024, npx * npy);  // max number of threads per block
-    // int n_blocks = ceil(static_cast<float>(npx * npy) / static_cast<float>(n_threads));
+    const int np = npx * npy;
+    int n_threads;
+    if (np > 1024){n_threads = 1024;}
+    else if(np > 512) {n_threads = 512;}
+    else if(np > 256) {n_threads = 256;}
+    else if(np > 128) {n_threads = 128;}
+    else if(np > 64) {n_threads = 64;}
+    else if(np > 32) {n_threads = 32;}
+    else if(np > 16) {n_threads = 16;}
+    else if(np > 8) {n_threads = 8;}
+    else if(np > 4) {n_threads = 4;}
 
-    
-    //float *temp;
-    //cudaMalloc(&temp, npx * sizeof(float));
-    reduce_small<<<1,n_threads, 2*n_threads*sizeof(float)>>>(rois, sum_array, r, npx, npy, 1);
-    // Really want to wait for all blocks to finish and then sum the sum_array, but not sure how    
-    //printf("Point 4 %f \n", sum_array[0]);
-    //float factor = get_factor(phot, sum_array, n_blocks);
-    //printf("factor: %f \n", factor);
-    //printf("Total_sum: %f \n", sum_array[0]);
+    // n_threads should be smallest power of 2 larger than half of npx*npy
+    const int startPos = r*np;
 
-    //normalize<<<n_blocks, n_threads>>>(rois, factor, r, npx, npy);
-    
-    // cudaFree(sum_array);
-
-    //reduce_sum_matrix<64><<< npx, 64 >>>(rois, total_sum, npy, r, npy, npx, temp);
-
+    reduce_small<<<1,n_threads, 2*n_threads*sizeof(float)>>>(rois, sum_array, r, np, 1, startPos);
+   
 
     }
 
 
-
-template <int blockSize>
-
-__device__ void warpReduce(volatile float *sdata, int tid) {
-    if (blockSize >= 64) sdata[tid] += sdata[tid + 32];
-    if (blockSize >= 32) sdata[tid] += sdata[tid + 16];
-    if (blockSize >= 16) sdata[tid] += sdata[tid + 8];
-    if (blockSize >= 8) sdata[tid] += sdata[tid + 4];
-    if (blockSize >= 4) sdata[tid] += sdata[tid + 2];
-    if (blockSize >= 2) sdata[tid] += sdata[tid + 1];
+__device__ void warpReduce(volatile float* sdata, int tid) {
+    sdata[tid] += sdata[tid + 32];
+    sdata[tid] += sdata[tid + 16];
+    sdata[tid] += sdata[tid + 8];
+    sdata[tid] += sdata[tid + 4];
+    sdata[tid] += sdata[tid + 2];
+    sdata[tid] += sdata[tid + 1];
     }
 
-
-template <int blockSize>
-
-__device__ void warpReduce_2(volatile float *sdata, int tid) {
-    // printf("Point 9 \n");
-    if (blockSize >= 64) sdata[tid] += sdata[tid + 32];
-    if (blockSize >= 32) sdata[tid] += sdata[tid + 16];
-    if (blockSize >= 16) sdata[tid] += sdata[tid + 8];
-    if (blockSize >= 8) sdata[tid] += sdata[tid + 4];
-    if (blockSize >= 4) sdata[tid] += sdata[tid + 2];
-    if (blockSize >= 2) sdata[tid] += sdata[tid + 1];
-    // printf("Point 10 \n");
-    }
-
-
-
-/*
-template <int blockSize>
-
-__global__ void reduce_dot_product_matrix(float *g_idata_a, float *g_idata_b, float *g_odata, unsigned int stride, unsigned int start,unsigned int n) {
-
-    // First multiplies each element in g_idata_a by corresponding element in g_idata_b, then sums all elements 
-
+__global__ void reduce_small(float *rois, float *g_odata, int r, const int np, int n_blocks, const int startPos) {
     extern __shared__ float sdata[];
-    unsigned int tid = threadIdx.x;
-    unsigned int i = blockIdx.x*(blockSize*2) + tid;
-    unsigned int gridSize = blockSize*2*gridDim.x;
-
-    printf("In Kernel 1: %i \n", tid);
-    sdata[tid] = 0;
-
-
-
-
-    //    while (i < n) { sdata[tid] += g_idata_a[i]*g_idata_b[i*stride + start] + g_idata_a[i+blockSize]*g_idata_b[(i+blockSize)*stride + start]; i += gridSize; }
-    while (i < n) { 
-        printf("In Kernel 2: %i \n", tid);
-        float temp2 = g_idata_b[i*stride + start]; 
-        printf("In Kernel 3: %i \n", tid);
-        float temp1 = g_idata_a[i];
-        printf("In Kernel 4: %i \n", tid);
-        float temp = temp1 * temp2 ;
-        printf("In Kernel 5: %i \n", tid);
-
-        sdata[tid] += temp;
-
-        i += gridSize; 
-    }
-
-    __syncthreads();
-
-    if (blockSize >= 512) { if (tid < 256) { sdata[tid] += sdata[tid + 256]; } __syncthreads(); }
-    if (blockSize >= 256) { if (tid < 128) { sdata[tid] += sdata[tid + 128]; } __syncthreads(); }
-    if (blockSize >= 128) { if (tid < 64) { sdata[tid] += sdata[tid + 64]; } __syncthreads(); }
-    if (tid < 32) warpReduce<blockSize>(sdata, tid);
-    if (tid == 0) g_odata[blockIdx.x] = sdata[0];
-    
-    }
-*/
-
-template <int blockSize>
-
-__global__ void reduce_sum_matrix(float *g_idata, float *g_odata, int n, 
- int r, int npy, int npx, float *temp) {
-
-    // Sums all elements of g_idata and returns g_odata
-    // IDEA: one block per row, sum everything, then sum all rows
-    extern __shared__ float sdata[];
-    int tid = threadIdx.x;
-    int i = blockIdx.x*(blockSize*2) + tid;
-    int gridSize = blockSize*2*gridDim.x;
-    sdata[tid] = 0;
-    int startPos = r*npx*npy + blockIdx.x*npy;
-
-    // float *temp;
-    // cudaMalloc(&temp, npx * sizeof(float));
-
-
-
-    printf("Point 3 \n");
-    while (i < n) { sdata[tid] += g_idata[startPos + i] + g_idata[startPos + i + blockSize]; i += gridSize; }
-    printf("Point 4 \n");
-    __syncthreads();
-    printf("Point 5 \n");
-    if (blockSize >= 512) { if (tid < 256) { sdata[tid] += sdata[tid + 256]; } __syncthreads(); }
-    if (blockSize >= 256) { if (tid < 128) { sdata[tid] += sdata[tid + 128]; } __syncthreads(); }
-    if (blockSize >= 128) { if (tid < 64) { sdata[tid] += sdata[tid + 64]; } __syncthreads(); }
-    if (tid < 32) warpReduce<blockSize>(sdata, tid);
-    if (tid == 0) temp[blockIdx.x] = sdata[0];
-    printf("Point 6 \n");
-
-    reduce<64><<< 1, 64>>>(temp, g_odata, 64);
-    cudaFree(temp);
-    }
-
-
-template <int blockSize>
-
-__global__ void reduce(float *g_idata, float *g_odata, int n) {
-
-    // Sums all elements of g_idata and returns g_odata
-    printf("Point 7 \n");
-    extern __shared__ float sdata[];
-    int tid = threadIdx.x;
-    int i = blockIdx.x*(blockSize*2) + tid;
-    int gridSize = blockSize*2*gridDim.x;
-    sdata[tid] = 0;
-    while (i < n) { sdata[tid] += g_idata[i] + g_idata[i+blockSize]; i += gridSize; }
-    printf("Point 8 \n");
-    __syncthreads();
-    if (blockSize >= 512) { if (tid < 256) { sdata[tid] += sdata[tid + 256]; } __syncthreads(); }
-    if (blockSize >= 256) { if (tid < 128) { sdata[tid] += sdata[tid + 128]; } __syncthreads(); }
-    if (blockSize >= 128) { if (tid < 64) { sdata[tid] += sdata[tid + 64]; } __syncthreads(); }
-    if (tid < 32) warpReduce_2<blockSize>(sdata, tid);
-    if (tid == 0) g_odata[blockIdx.x] = sdata[0];
-
-    //printf("Point 11 \n");
-
-    }
-
-__global__ void reduce0(float *rois, float *g_odata, int r, int npx, int npy, int n_blocks) {
-    extern __shared__ float sdata[];
-    // each thread loads one element from global to shared mem
-    int tid = int(threadIdx.x);
-    int i = blockIdx.x*blockDim.x + threadIdx.x;
-    int startPos = r*npx*npy;
-
-    //    printf("Point 2 \n");
-
-    if (i < npx*npy){
-        sdata[tid] = rois[startPos + i];
-    } else {
-        sdata[tid] = 0.0;
-    }
-
-    __syncthreads();
-
-
-    // printf("Point 3 tid: %f \n", sdata[tid]);
-
-    // 
-    //printf("Point 4 i: %d, r: %d \n", i, r);
-
-
-    // do reduction in shared mem
-    for (unsigned int s=blockDim.x/2; s>0; s>>=1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }       
-        __syncthreads();
-    }
-    // write result for this block to global mem
-
-    // printf("Point 3 %f \n", sdata[0]);
-    if (tid == 0) {
-        // printf("Writing \n");
-        g_odata[r*n_blocks + blockIdx.x] = sdata[0];
-        }
-    }
-
-
-__global__ void reduce_small(float *rois, float *g_odata, int r, int npx, int npy, int n_blocks) {
-    extern __shared__ float sdata[];
-    // each thread loads one element from global to shared mem
     int tid = int(threadIdx.x);
     int i = blockIdx.x*(blockDim.x*2) + threadIdx.x;
-    int startPos = r*npx*npy;
 
-    // printf("Point 2 \n");
-
-    if (i < (npx*npy)-blockDim.x) {
+    if (i < (np)-blockDim.x) {
         sdata[tid] = rois[startPos + i] + rois[startPos + i + blockDim.x];
     } else {
         sdata[tid] = rois[startPos + i];
@@ -1041,24 +834,17 @@ __global__ void reduce_small(float *rois, float *g_odata, int r, int npx, int np
     __syncthreads();
 
 
-    // printf("Point 3 tid: %f \n", sdata[tid]);
-
-    // 
-    //printf("Point 4 i: %d, r: %d \n", i, r);
-
-
     // do reduction in shared mem
-    for (int s=blockDim.x/2; s>0; s>>=1) {
+    for (int s=blockDim.x/2; s>32; s>>=1) {
         if (tid < s) {
             sdata[tid] += sdata[tid + s];
         }       
         __syncthreads();
     }
-    // write result for this block to global mem
 
-    // printf("Point 3 %f \n", sdata[0]);
+    if (tid < 32) warpReduce(sdata, tid);
+
     if (tid == 0) {
-        // printf("Writing \n");
         g_odata[r*n_blocks + blockIdx.x] = sdata[0];
         }
     }
@@ -1073,15 +859,16 @@ __global__ void kernel_normalize(float *rois, float *factors, int npx, int npy){
 
     int n_threads = min(1024, npx * npy);  // max number of threads per block
     int n_blocks = ceil(static_cast<float>(npx * npy) / static_cast<float>(n_threads));
-
-    normalize<<<n_blocks, n_threads>>>(rois, factor, r, npx, npy);
+    const int n_pixels = npx * npy;
+    normalize<<<n_blocks, n_threads>>>(rois, factor, r, n_pixels);
 
 }
-__global__ void normalize(float *rois, float factor, int r, int npx, int npy){
+__global__ void normalize(float *rois, float factor, int r, const int n_pixels){
 
     int i = blockIdx.x*blockDim.x + threadIdx.x;
-    int startPos = r*npx*npy;
-    if (i < npx*npy) {rois[startPos + i] *= factor;}
+    int startPos = r*n_pixels;
+
+    if (i < n_pixels) {rois[startPos + i] *= factor;}
     
 }
 
@@ -1094,7 +881,3 @@ __global__ void get_factor(const float* phot_, float *total_sum, float *factors)
 
 }
 
-
-__global__ void dummy(){
-    return;
-}
